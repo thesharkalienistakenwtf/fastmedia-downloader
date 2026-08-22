@@ -41,6 +41,20 @@ AUDIO_FORMAT_ID = "bestaudio"
 HTTP_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 STREAM_TIMEOUT = httpx.Timeout(None, connect=15.0)
 
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+
+BASE_YTDLP_OPTIONS = {
+    "quiet": True,
+    "no_warnings": True,
+    "noplaylist": True,
+    "nocheckcertificate": True,
+    "http_headers": {"User-Agent": USER_AGENT},
+    "extractor_retries": 3,
+}
+
 app = FastAPI(
     title="FastMedia Downloader - API Gateway",
     description="Extraccion de metadatos y orquestacion de descargas multimedia.",
@@ -81,10 +95,8 @@ def get_video_info(url: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="URL invalida")
 
     options = {
-        "quiet": True,
-        "no_warnings": True,
+        **BASE_YTDLP_OPTIONS,
         "skip_download": True,
-        "noplaylist": True,
         "socket_timeout": 15,
     }
     try:
@@ -190,14 +202,33 @@ async def download_file(job_id: str) -> StreamingResponse:
     if not filename:
         raise HTTPException(status_code=404, detail="Archivo no encontrado")
 
-    async def stream_media():
-        async with httpx.AsyncClient(timeout=STREAM_TIMEOUT) as client:
-            async with client.stream("GET", f"{MEDIA_PROCESSOR_URL}/jobs/{job_id}/file") as upstream:
-                upstream.raise_for_status()
-                async for chunk in upstream.aiter_bytes(chunk_size=256 * 1024):
-                    yield chunk
+    client = httpx.AsyncClient(timeout=STREAM_TIMEOUT)
+    try:
+        request = client.build_request("GET", f"{MEDIA_PROCESSOR_URL}/jobs/{job_id}/file")
+        upstream = await client.send(request, stream=True)
+    except httpx.HTTPError as exc:
+        await client.aclose()
+        raise HTTPException(status_code=502, detail="El servicio de procesamiento no esta disponible") from exc
 
-    headers = {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"}
+    if upstream.status_code >= 400:
+        detail = _extract_detail(upstream)
+        await upstream.aclose()
+        await client.aclose()
+        raise HTTPException(status_code=upstream.status_code, detail=detail)
+
+    headers: dict[str, str] = {"Content-Disposition": _content_disposition(filename)}
+    content_length = upstream.headers.get("content-length")
+    if content_length:
+        headers["Content-Length"] = content_length
+
+    async def stream_media():
+        try:
+            async for chunk in upstream.aiter_bytes(chunk_size=256 * 1024):
+                yield chunk
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
     return StreamingResponse(
         stream_media(),
         media_type=_guess_media_type(filename),
@@ -222,6 +253,12 @@ def _extract_detail(response: httpx.Response) -> str:
         return str(response.json().get("detail") or "Error en el servicio de procesamiento")
     except Exception:  # noqa: BLE001
         return "Error en el servicio de procesamiento"
+
+
+def _content_disposition(filename: str) -> str:
+    """RFC 6266/5987: fallback ASCII + version UTF-8 para nombres unicode."""
+    ascii_name = filename.encode("ascii", "ignore").decode().replace('"', "").strip()
+    return f'attachment; filename="{ascii_name or "download"}"; filename*=UTF-8\'\'{quote(filename, safe="")}'
 
 
 def _guess_media_type(filename: str) -> str:

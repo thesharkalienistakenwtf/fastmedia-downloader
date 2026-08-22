@@ -18,7 +18,7 @@ RUN mkdir -p /app/temp_storage
 
 EXPOSE 8001
 
-HEALTHCHECK --interval=15s --timeout=5s --start-period=15s --retries=5 \
+HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=5 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8001/health').read()" || exit 1
 
-CMD ["uvicorn", "worker:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["sh", "-c", "pip install --no-cache-dir --upgrade yt-dlp || echo '[WARN] yt-dlp upgrade failed; using bundled version'; exec uvicorn worker:app --host 0.0.0.0 --port 8001"]

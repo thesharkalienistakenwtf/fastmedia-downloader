@@ -6,7 +6,9 @@ el ciclo de vida de archivos temporales (UUIDs) y su limpieza post-descarga.
 """
 
 import asyncio
+import logging
 import os
+import re
 import shutil
 import threading
 import time
@@ -20,9 +22,18 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, field_validator
 
+logger = logging.getLogger(__name__)
+
 TEMP_STORAGE = Path(os.getenv("TEMP_STORAGE_DIR", "/app/temp_storage"))
 FILE_TTL_MINUTES = int(os.getenv("FILE_TTL_MINUTES", "30"))
 CLEANUP_INTERVAL_SECONDS = 60
+
+JOB_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
+
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
 
 JOBS_LOCK = threading.Lock()
 JOBS: dict[str, dict[str, Any]] = {}
@@ -121,6 +132,8 @@ def process_media(request: ProcessRequest, background_tasks: BackgroundTasks) ->
 
 @app.get("/jobs/{job_id}", response_model=JobResponse)
 def job_status(job_id: str) -> dict[str, Any]:
+    if not JOB_ID_PATTERN.fullmatch(job_id):
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado o expirado")
     with JOBS_LOCK:
         job = JOBS.get(job_id)
         if not job:
@@ -130,6 +143,8 @@ def job_status(job_id: str) -> dict[str, Any]:
 
 @app.get("/jobs/{job_id}/file")
 def job_file(job_id: str) -> FileResponse:
+    if not JOB_ID_PATTERN.fullmatch(job_id):
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado o expirado")
     with JOBS_LOCK:
         job = JOBS.get(job_id)
     if not job:
@@ -137,7 +152,12 @@ def job_file(job_id: str) -> FileResponse:
     if job["status"] != "completed":
         raise HTTPException(status_code=409, detail="El archivo aun no esta listo")
 
-    path = TEMP_STORAGE / job_id / job["filename"]
+    filename = job.get("filename")
+    if not filename:
+        logger.error("Job %s completado sin filename registrado", job_id)
+        raise HTTPException(status_code=404, detail="Archivo no encontrado para este trabajo")
+
+    path = TEMP_STORAGE / job_id / filename
     if not path.is_file():
         raise HTTPException(status_code=410, detail="El archivo expiro y fue eliminado")
 
@@ -195,6 +215,12 @@ def _run_job(job_id: str, url: str, format_id: Optional[str], audio_only: bool) 
             "noplaylist": True,
             "socket_timeout": 30,
             "retries": 3,
+            "nocheckcertificate": True,
+            "http_headers": {"User-Agent": USER_AGENT},
+            "extractor_retries": 3,
+            "fragment_retries": 10,
+            "skip_unavailable_fragments": True,
+            "windowsfilenames": True,
             "progress_hooks": [_progress_hook(job_id)],
         }
 
@@ -220,6 +246,7 @@ def _run_job(job_id: str, url: str, format_id: Optional[str], audio_only: bool) 
             title = (info or {}).get("title")
 
         output_file = _largest_output_file(job_dir)
+        logger.info("Job %s completado: %s (%d bytes)", job_id, output_file.name, output_file.stat().st_size)
         with JOBS_LOCK:
             JOBS[job_id].update({
                 "status": "completed",
