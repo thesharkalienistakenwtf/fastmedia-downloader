@@ -76,28 +76,26 @@ npm install
 npm run dev          # http://localhost:3000
 ```
 
-### API Gateway
+### API Gateway (terminal 1)
 
 ```bash
 cd services/api-gateway
 python -m venv .venv && .venv\Scripts\activate     # Windows (Linux/macOS: source .venv/bin/activate)
 pip install -r requirements.txt
+set MEDIA_PROCESSOR_URL=http://localhost:8001      # Windows (Linux/macOS: export MEDIA_PROCESSOR_URL=...)
+set ALLOWED_ORIGINS=http://localhost:3000
 uvicorn main:app --reload --port 8000
 ```
 
-### Media Processor
+### Media Processor (terminal 2)
 
 ```bash
 cd services/media-processor
 python -m venv .venv && .venv\Scripts\activate
 pip install -r requirements.txt
 # Requiere ffmpeg en PATH: winget install Gyan.FFmpeg  (Windows) / apt install ffmpeg (Debian/Ubuntu)
-set MEDIA_PROCESSOR_URL=http://localhost:8001        # no aplica aquí; es variable del gateway
-set ALLOWED_ORIGINS=http://localhost:3000
-uvicorn main:app --port 8000                         # gateway
-# en otra terminal:
-set TEMP_STORAGE_DIR=./temp_storage
-uvicorn worker:app --port 8001                       # media processor
+set TEMP_STORAGE_DIR=./temp_storage                # Linux/macOS: export TEMP_STORAGE_DIR=./temp_storage
+uvicorn worker:app --port 8001
 ```
 
 ---
@@ -106,10 +104,12 @@ uvicorn worker:app --port 8001                       # media processor
 
 | Método | Endpoint (Gateway :8000) | Descripción |
 |---|---|---|
-| `GET` | `/api/v1/info?url=` | Metadatos: título, miniatura, duración, creador + formatos disponibles |
+| `GET` | `/api/v1/info?url=` | Metadatos: título, miniatura, duración, creador + formatos con tamaño estimado (`filesize_bytes` / `filesize_human`) |
 | `POST` | `/api/v1/downloads` | Body `{ "url", "format_id"?, "audio_only"? }` → `{ job_id }` (HTTP 202) |
 | `GET` | `/api/v1/downloads/{job_id}` | Estado del job: `queued/downloading/processing/completed/error`, progreso % |
 | `GET` | `/api/v1/downloads/{job_id}/file` | Streaming del archivo terminado (`Content-Disposition: attachment`) |
+
+> **Errores comunes del Gateway:** `400` URL inválida o que apunta a una IP no pública (bloqueo anti-SSRF) · `409` archivo aún no listo · `410` archivo expirado · `413` cuerpo supera `MAX_BODY_BYTES` · `429` rate limit por IP o cupo de jobs concurrentes lleno · `502` media-processor no disponible.
 
 | Método | Endpoint (Media Processor :8001, red interna) |
 |---|---|
@@ -124,11 +124,20 @@ uvicorn worker:app --port 8001                       # media processor
 
 | Variable | Servicio | Default | Descripción |
 |---|---|---|---|
+| `FRONTEND_PORT` / `API_GATEWAY_PORT` | compose | `3000` / `8000` | Puertos publicados en el host |
 | `NEXT_PUBLIC_API_URL` | frontend | `http://localhost:8000` | URL pública del Gateway (se compila en el bundle cliente) |
 | `MEDIA_PROCESSOR_URL` | api-gateway | `http://localhost:8001` | URL interna del microservicio de procesamiento |
 | `ALLOWED_ORIGINS` | api-gateway | `http://localhost:3000` | Orígenes CORS separados por coma |
+| `RATE_LIMIT_PER_MINUTE` | api-gateway | `60` | Rate limit general por IP (peticiones/minuto) |
+| `DOWNLOADS_PER_MINUTE` | api-gateway | `10` | Límite de `POST /api/v1/downloads` por IP y minuto |
+| `MAX_BODY_BYTES` | api-gateway | `65536` | Tamaño máximo del cuerpo de las peticiones (413 al exceder) |
+| `ALLOW_PRIVATE_URLS` | api-gateway | `0` | `1` desactiva el bloqueo anti-SSRF de IPs privadas/loopback |
+| `YTDLP_ALLOW_INSECURE_TLS` | gateway + processor | `0` | `1` desactiva la verificación TLS de yt-dlp (no recomendado) |
 | `TEMP_STORAGE_DIR` | media-processor | `/app/temp_storage` | Directorio de archivos temporales |
-| `FILE_TTL_MINUTES` | media-processor | `30` | Minutos antes de purgar trabajos terminados |
+| `FILE_TTL_MINUTES` | media-processor | `30` | Minutos antes de purgar trabajos terminados y sus archivos |
+| `MAX_CONCURRENT_JOBS` | media-processor | `3` | Descargas simultáneas; exceder responde `429` |
+| `MAX_JOB_MINUTES` | media-processor | `20` | TTL duro: aborta y purga jobs atascados |
+| `MAX_FILESIZE_MB` | media-processor | `2048` | Tamaño máximo por archivo descargado |
 
 ---
 
@@ -136,8 +145,9 @@ uvicorn worker:app --port 8001                       # media processor
 
 ```
 fastmedia-downloader/
-├── docker-compose.yml              # Orquestación: red bridge, volúmenes, healthchecks
-├── .env.example
+├── docker-compose.yml              # Orquestación: red bridge, volúmenes, healthchecks, límites de recursos
+├── .env.example                    # Variables de entorno documentadas (copiar a .env)
+├── LICENSE                         # MIT © 2026 Juan Camilo Llamas Cárdenas
 ├── services/
 │   ├── frontend/                   # Next.js 14+ (App Router, TS, Tailwind)
 │   │   ├── Dockerfile              # Build multietapa (deps → builder → runner standalone)
@@ -162,7 +172,41 @@ fastmedia-downloader/
 
 ## 🧭 Decisiones técnicas y roadmap
 
-- **Jobs en memoria** (`dict` + lock) dentro del Media Processor: simple y sin dependencias externas para v1. Los jobs no sobreviven reinicios del contenedor. Ruta de escalado: sustituir por **Redis** + cola (RQ/Celery/arq) para múltiples réplicas horizontales del worker.
+- **Jobs en memoria** (`dict` + lock) dentro del Media Processor: simple y sin dependencias externas para v1. Los jobs no sobreviven reinicios del contenedor (los directorios huérfanos de `temp_storage/` se purgan al arrancar). Ruta de escalado: sustituir por **Redis** + cola (RQ/Celery/arq) para múltiples réplicas horizontales del worker.
 - **Progreso por pistas**: en descargas DASH (video+audio separados) la barra puede reiniciarse entre pista de video y pista de audio; es el comportamiento esperado del hook de yt-dlp.
 - **Plataformas con anti-bot agresivo** (p. ej. YouTube en datacenters): pueden requerir cookies o tokens; se puede extender pasando `cookiefile` en las opciones de yt-dlp.
-- Limpieza automática de `temp_storage/` cada 60 s para archivos con más de `FILE_TTL_MINUTES`.
+- Limpieza automática de `temp_storage/` cada 60 s: archivos terminados con más de `FILE_TTL_MINUTES`, jobs atascados con más de `MAX_JOB_MINUTES`.
+- **yt-dlp siempre actualizado**: cada contenedor intenta `pip install --upgrade yt-dlp` al arrancar (best-effort: sin red, arranca con la versión incluida). Previene bloqueos por firmas desactualizadas de las plataformas.
+- **Tamaños estimados en la UI**: `/api/v1/info` calcula el peso final sumando video + audio del merge DASH; si la plataforma omite el tamaño, se aproxima con `tbr × duración`. La opción MP3 se estima a 192 kbps.
+- **Seguridad y límites**: rate limiting en memoria por IP (`RATE_LIMIT_PER_MINUTE` / `DOWNLOADS_PER_MINUTE`), cuerpo máximo `MAX_BODY_BYTES`, bloqueo anti-SSRF de IPs privadas/loopback, whitelist de `format_id`, TLS verificado por defecto, contenedores Python sin root y con `no-new-privileges` + `cap_drop: ALL` + límites de memoria/CPU por servicio.
+
+---
+
+## 🤝 ¿Cómo contribuir al proyecto?
+
+¡Las contribuciones son bienvenidas y apreciadas! Si deseas mejorar el código, solucionar un bug o agregar nuevas funcionalidades, sigue estos pasos:
+
+1. **Haz un Fork** del repositorio.
+2. **Crea una rama** para tu funcionalidad o fix:
+   ```bash
+   git checkout -b feature/nueva-funcionalidad
+   # o para correcciones:
+   git checkout -b fix/descripcion-del-bug
+   ```
+3. **Realiza tus cambios** y haz commits claros utilizando [Conventional Commits](https://www.conventionalcommits.org/):
+   ```bash
+   git commit -m "feat: agregar soporte para nueva plataforma"
+   ```
+4. **Envía tus cambios** a tu repositorio remoto:
+   ```bash
+   git push origin feature/nueva-funcionalidad
+   ```
+5. **Abre un Pull Request (PR)** hacia la rama `main` de este repositorio detallando los cambios realizados.
+
+---
+
+## 👤 Autor y Licencia
+
+Desarrollado y mantenido por **Juan Camilo Llamas Cárdenas**.
+
+Este proyecto es de código abierto y uso libre bajo la licencia [MIT](LICENSE). Eres libre de usarlo, modificarlo y distribuirlo respetando los créditos de autoría correspondientes.
