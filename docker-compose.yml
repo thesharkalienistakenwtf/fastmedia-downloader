@@ -1,0 +1,49 @@
+name: fastmedia-downloader
+
+services:
+  frontend:
+    build:
+      context: ./services/frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - fastmedia-net
+
+  api-gateway:
+    build: ./services/api-gateway
+    ports:
+      - "${API_GATEWAY_PORT:-8000}:8000"
+    environment:
+      MEDIA_PROCESSOR_URL: http://media-processor:8001
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+    depends_on:
+      media-processor:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - fastmedia-net
+
+  media-processor:
+    build: ./services/media-processor
+    expose:
+      - "8001"
+    environment:
+      TEMP_STORAGE_DIR: /app/temp_storage
+      FILE_TTL_MINUTES: ${FILE_TTL_MINUTES:-30}
+    volumes:
+      - ./services/media-processor/temp_storage:/app/temp_storage
+    restart: unless-stopped
+    networks:
+      - fastmedia-net
+
+networks:
+  fastmedia-net:
+    driver: bridge

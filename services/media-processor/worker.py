@@ -1,0 +1,246 @@
+"""FastMedia Downloader - Media Processor Microservice.
+
+Descarga asincrona con yt-dlp, ensamblaje de alta definicion (merge de
+pistas audio/video) y conversion de formatos mediante FFmpeg. Gestiona
+el ciclo de vida de archivos temporales (UUIDs) y su limpieza post-descarga.
+"""
+
+import asyncio
+import os
+import shutil
+import threading
+import time
+import uuid
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any, Optional
+
+import yt_dlp
+from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, field_validator
+
+TEMP_STORAGE = Path(os.getenv("TEMP_STORAGE_DIR", "/app/temp_storage"))
+FILE_TTL_MINUTES = int(os.getenv("FILE_TTL_MINUTES", "30"))
+CLEANUP_INTERVAL_SECONDS = 60
+
+JOBS_LOCK = threading.Lock()
+JOBS: dict[str, dict[str, Any]] = {}
+
+MEDIA_TYPES = {
+    ".mp4": "video/mp4",
+    ".mkv": "video/x-matroska",
+    ".webm": "video/webm",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+}
+
+
+async def _cleanup_expired_files() -> None:
+    """Janitor: purga trabajos terminados y sus archivos cuando superan el TTL."""
+    while True:
+        await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
+        cutoff = time.time() - FILE_TTL_MINUTES * 60
+        expired: list[str] = []
+        with JOBS_LOCK:
+            for job_id, job in JOBS.items():
+                if job["created_at"] < cutoff and job["status"] in ("completed", "error"):
+                    expired.append(job_id)
+        for job_id in expired:
+            shutil.rmtree(TEMP_STORAGE / job_id, ignore_errors=True)
+            with JOBS_LOCK:
+                JOBS.pop(job_id, None)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    TEMP_STORAGE.mkdir(parents=True, exist_ok=True)
+    janitor = asyncio.create_task(_cleanup_expired_files())
+    yield
+    janitor.cancel()
+
+
+app = FastAPI(
+    title="FastMedia Downloader - Media Processor",
+    description="Descarga y procesamiento de medios con yt-dlp + FFmpeg.",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+
+class ProcessRequest(BaseModel):
+    url: str
+    format_id: Optional[str] = None
+    audio_only: bool = False
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str) -> str:
+        if not value.lower().startswith(("http://", "https://")):
+            raise ValueError("La URL debe comenzar con http:// o https://")
+        return value
+
+
+class JobResponse(BaseModel):
+    job_id: str
+    status: str
+    progress: float
+    stage: str
+    title: Optional[str] = None
+    filename: Optional[str] = None
+    error: Optional[str] = None
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok", "service": "media-processor"}
+
+
+@app.post("/process-media", status_code=202)
+def process_media(request: ProcessRequest, background_tasks: BackgroundTasks) -> dict[str, str]:
+    """Encola una descarga y responde de inmediato con su identificador."""
+    if not request.audio_only and not request.format_id:
+        raise HTTPException(status_code=400, detail="Indica un formato (format_id) o audio_only=true")
+
+    job_id = uuid.uuid4().hex
+    with JOBS_LOCK:
+        JOBS[job_id] = {
+            "job_id": job_id,
+            "status": "queued",
+            "progress": 0.0,
+            "stage": "en cola",
+            "title": None,
+            "filename": None,
+            "error": None,
+            "created_at": time.time(),
+        }
+
+    background_tasks.add_task(_run_job, job_id, request.url, request.format_id, request.audio_only)
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/jobs/{job_id}", response_model=JobResponse)
+def job_status(job_id: str) -> dict[str, Any]:
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Trabajo no encontrado o expirado")
+        return {key: value for key, value in job.items() if key != "created_at"}
+
+
+@app.get("/jobs/{job_id}/file")
+def job_file(job_id: str) -> FileResponse:
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado o expirado")
+    if job["status"] != "completed":
+        raise HTTPException(status_code=409, detail="El archivo aun no esta listo")
+
+    path = TEMP_STORAGE / job_id / job["filename"]
+    if not path.is_file():
+        raise HTTPException(status_code=410, detail="El archivo expiro y fue eliminado")
+
+    return FileResponse(
+        path,
+        media_type=MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream"),
+        filename=path.name,
+    )
+
+
+def _progress_hook(job_id: str):
+    """Fabrica de hooks de progreso que actualizan el registro del job."""
+
+    def hook(download: dict[str, Any]) -> None:
+        with JOBS_LOCK:
+            job = JOBS.get(job_id)
+            if not job or job["status"] == "error":
+                return
+            status = download.get("status")
+            if status == "downloading":
+                total = download.get("total_bytes") or download.get("total_bytes_estimate") or 0
+                downloaded = download.get("downloaded_bytes") or 0
+                if total:
+                    job["progress"] = round(min(downloaded / total * 100.0, 99.0), 1)
+                job["status"] = "downloading"
+                job["stage"] = "descargando"
+            elif status == "finished":
+                job["status"] = "processing"
+                job["stage"] = "ensamblando pistas con FFmpeg"
+
+    return hook
+
+
+def _largest_output_file(job_dir: Path) -> Path:
+    candidates = [
+        p
+        for p in job_dir.iterdir()
+        if p.is_file() and not p.name.endswith((".part", ".ytdl", ".temp", ".json"))
+    ]
+    if not candidates:
+        raise FileNotFoundError("No se genero ningun archivo de salida")
+    return max(candidates, key=lambda p: p.stat().st_size)
+
+
+def _run_job(job_id: str, url: str, format_id: Optional[str], audio_only: bool) -> None:
+    """Tarea en segundo plano: descarga con yt-dlp + post-proceso FFmpeg."""
+    job_dir = TEMP_STORAGE / job_id
+    try:
+        job_dir.mkdir(parents=True, exist_ok=True)
+
+        options: dict[str, Any] = {
+            "outtmpl": str(job_dir / "%(title).180B.%(ext)s"),
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "socket_timeout": 30,
+            "retries": 3,
+            "progress_hooks": [_progress_hook(job_id)],
+        }
+
+        if audio_only:
+            options.update({
+                "format": "bestaudio/best",
+                "postprocessors": [{
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }],
+            })
+        else:
+            # Descarga la pista de video elegida + la mejor pista de audio y
+            # ensambla ambas en MP4 mediante FFmpegMergerPP.
+            options.update({
+                "format": f"{format_id}+bestaudio[ext=m4a]/bestaudio+bestaudio/best",
+                "merge_output_format": "mp4",
+            })
+
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(url, download=True)
+            title = (info or {}).get("title")
+
+        output_file = _largest_output_file(job_dir)
+        with JOBS_LOCK:
+            JOBS[job_id].update({
+                "status": "completed",
+                "progress": 100.0,
+                "stage": "completado",
+                "title": title,
+                "filename": output_file.name,
+            })
+    except Exception as exc:
+        with JOBS_LOCK:
+            if job_id in JOBS:
+                JOBS[job_id].update({
+                    "status": "error",
+                    "progress": 0.0,
+                    "stage": "error",
+                    "error": str(exc)[:500],
+                })
+        shutil.rmtree(job_dir, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=8001)
