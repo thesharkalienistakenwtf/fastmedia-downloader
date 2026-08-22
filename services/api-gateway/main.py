@@ -5,16 +5,25 @@ Enrutamiento, validaciones y CORS. Extrae metadatos ligeros con yt-dlp
 media-processor, actuando como proxy de estado y streaming de archivos.
 """
 
+import ipaddress
+import logging
 import os
+import re
+import socket
+import threading
+import time
+from collections import defaultdict, deque
 from typing import Any, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 import yt_dlp
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, field_validator
+
+logger = logging.getLogger(__name__)
 
 MEDIA_PROCESSOR_URL = os.getenv("MEDIA_PROCESSOR_URL", "http://localhost:8001").rstrip("/")
 ALLOWED_ORIGINS = [
@@ -22,6 +31,15 @@ ALLOWED_ORIGINS = [
     for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
     if origin.strip()
 ]
+
+RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "60"))
+DOWNLOADS_PER_MINUTE = int(os.getenv("DOWNLOADS_PER_MINUTE", "10"))
+MAX_BODY_BYTES = int(os.getenv("MAX_BODY_BYTES", "65536"))
+ALLOW_PRIVATE_URLS = os.getenv("ALLOW_PRIVATE_URLS", "0").lower() in ("1", "true", "yes")
+ALLOW_INSECURE_TLS = os.getenv("YTDLP_ALLOW_INSECURE_TLS", "0").lower() in ("1", "true", "yes")
+
+JOB_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
+FORMAT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.\-]{1,32}$")
 
 RESOLUTION_LABELS = {
     4320: "8K",
@@ -50,10 +68,50 @@ BASE_YTDLP_OPTIONS = {
     "quiet": True,
     "no_warnings": True,
     "noplaylist": True,
-    "nocheckcertificate": True,
+    "nocheckcertificate": ALLOW_INSECURE_TLS,
     "http_headers": {"User-Agent": USER_AGENT},
     "extractor_retries": 3,
 }
+
+_RATE_LOCK = threading.Lock()
+_RATE_HITS: dict[tuple[str, str], deque[float]] = defaultdict(deque)
+
+
+def _rate_limit(key: tuple[str, str], limit: int, window_seconds: float = 60.0) -> bool:
+    """Ventana deslizante en memoria; True si la peticion queda dentro del limite."""
+    now = time.monotonic()
+    with _RATE_LOCK:
+        hits = _RATE_HITS[key]
+        while hits and hits[0] <= now - window_seconds:
+            hits.popleft()
+        if len(hits) >= limit:
+            return False
+        hits.append(now)
+        if len(_RATE_HITS) > 10_000:
+            for bucket in [k for k, v in _RATE_HITS.items() if not v]:
+                _RATE_HITS.pop(bucket, None)
+        return True
+
+
+def _assert_public_url(url: str) -> None:
+    """Bloqueo SSRF basico: resuelve el host y rechaza IPs no publicas."""
+    if ALLOW_PRIVATE_URLS:
+        return
+    hostname = urlparse(url).hostname
+    if not hostname:
+        raise HTTPException(status_code=400, detail="URL invalida")
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as exc:
+        raise HTTPException(status_code=400, detail="No se pudo resolver el host de la URL") from exc
+    for info in infos:
+        address = info[4][0].split("%")[0]
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+        if not ip.is_global:
+            raise HTTPException(status_code=400, detail="La URL apunta a una direccion no publica")
 
 app = FastAPI(
     title="FastMedia Downloader - API Gateway",
@@ -70,6 +128,20 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def abuse_guard(request: Request, call_next):
+    client_ip = request.client.host if request.client else "unknown"
+    content_length = request.headers.get("content-length")
+    if content_length and content_length.isdigit() and int(content_length) > MAX_BODY_BYTES:
+        return JSONResponse(status_code=413, content={"detail": "Cuerpo de la peticion demasiado grande"})
+    if not _rate_limit((client_ip, "general"), RATE_LIMIT_PER_MINUTE):
+        return JSONResponse(status_code=429, content={"detail": "Demasiadas peticiones; reintenta mas tarde"})
+    if request.method == "POST" and request.url.path == "/api/v1/downloads":
+        if not _rate_limit((client_ip, "downloads"), DOWNLOADS_PER_MINUTE):
+            return JSONResponse(status_code=429, content={"detail": "Limite de descargas por minuto alcanzado"})
+    return await call_next(request)
+
+
 class DownloadRequest(BaseModel):
     url: str
     format_id: Optional[str] = None
@@ -80,6 +152,13 @@ class DownloadRequest(BaseModel):
     def validate_url(cls, value: str) -> str:
         if not value.lower().startswith(("http://", "https://")):
             raise ValueError("La URL debe comenzar con http:// o https://")
+        return value
+
+    @field_validator("format_id")
+    @classmethod
+    def validate_format_id(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and not FORMAT_ID_PATTERN.fullmatch(value):
+            raise ValueError("format_id contiene caracteres no permitidos")
         return value
 
 
@@ -93,6 +172,7 @@ def get_video_info(url: str) -> dict[str, Any]:
     """Invoca yt-dlp en modo download=False para obtener metadatos y formatos."""
     if not url.lower().startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="URL invalida")
+    _assert_public_url(url)
 
     options = {
         **BASE_YTDLP_OPTIONS,
@@ -103,9 +183,11 @@ def get_video_info(url: str) -> dict[str, Any]:
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(url, download=False)
     except yt_dlp.utils.YoutubeDLError as exc:
-        raise HTTPException(status_code=400, detail=f"No se pudo analizar el video: {exc}") from exc
+        logger.warning("Analisis fallido para %s: %s", url, exc)
+        raise HTTPException(status_code=400, detail="No se pudo analizar el video") from exc
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Error inesperado analizando el video: {exc}") from exc
+        logger.exception("Error inesperado analizando %s", url)
+        raise HTTPException(status_code=500, detail="Error inesperado analizando el video") from exc
 
     if info is None:
         raise HTTPException(status_code=404, detail="No se encontro contenido en la URL indicada")
@@ -168,6 +250,10 @@ def _map_formats(info: dict[str, Any]) -> list[dict[str, Any]]:
 @app.post("/api/v1/downloads", status_code=202)
 async def create_download(request: DownloadRequest) -> dict[str, Any]:
     """Valida la solicitud y delega el trabajo pesado al media-processor."""
+    if not request.url.lower().startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="URL invalida")
+    _assert_public_url(request.url)
+
     payload: dict[str, Any] = {"url": request.url}
     if request.audio_only:
         payload["audio_only"] = True
@@ -189,12 +275,14 @@ async def create_download(request: DownloadRequest) -> dict[str, Any]:
 
 @app.get("/api/v1/downloads/{job_id}")
 async def get_download_status(job_id: str) -> dict[str, Any]:
+    _ensure_valid_job_id(job_id)
     return await _proxy_job_get(job_id)
 
 
 @app.get("/api/v1/downloads/{job_id}/file")
 async def download_file(job_id: str) -> StreamingResponse:
     """Transmite en proxy el archivo generado por el media-processor."""
+    _ensure_valid_job_id(job_id)
     job = await _proxy_job_get(job_id)
     if job.get("status") != "completed":
         raise HTTPException(status_code=409, detail="El archivo aun no esta listo")
@@ -234,6 +322,11 @@ async def download_file(job_id: str) -> StreamingResponse:
         media_type=_guess_media_type(filename),
         headers=headers,
     )
+
+
+def _ensure_valid_job_id(job_id: str) -> None:
+    if not JOB_ID_PATTERN.fullmatch(job_id):
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado o expirado")
 
 
 async def _proxy_job_get(job_id: str) -> dict[str, Any]:

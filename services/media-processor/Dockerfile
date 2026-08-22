@@ -14,11 +14,14 @@ RUN pip install -r requirements.txt
 
 COPY worker.py .
 
-RUN mkdir -p /app/temp_storage
+RUN useradd --system --uid 1001 --create-home appuser \
+ && chown -R appuser:appuser /app
+
+USER appuser
 
 EXPOSE 8001
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=5 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8001/health').read()" || exit 1
 
-CMD ["sh", "-c", "pip install --no-cache-dir --upgrade yt-dlp || echo '[WARN] yt-dlp upgrade failed; using bundled version'; exec uvicorn worker:app --host 0.0.0.0 --port 8001"]
+CMD ["sh", "-c", "pip install --user --no-cache-dir --upgrade yt-dlp || echo '[WARN] yt-dlp upgrade failed; using bundled version'; exec uvicorn worker:app --host 0.0.0.0 --port 8001"]

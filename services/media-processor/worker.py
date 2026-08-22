@@ -29,11 +29,19 @@ FILE_TTL_MINUTES = int(os.getenv("FILE_TTL_MINUTES", "30"))
 CLEANUP_INTERVAL_SECONDS = 60
 
 JOB_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
+FORMAT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.\-]{1,32}$")
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
+
+MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_JOBS", "3"))
+MAX_JOB_MINUTES = int(os.getenv("MAX_JOB_MINUTES", "20"))
+MAX_FILESIZE_MB = int(os.getenv("MAX_FILESIZE_MB", "2048"))
+ALLOW_INSECURE_TLS = os.getenv("YTDLP_ALLOW_INSECURE_TLS", "0").lower() in ("1", "true", "yes")
+
+ACTIVE_STATES = ("queued", "downloading", "processing")
 
 JOBS_LOCK = threading.Lock()
 JOBS: dict[str, dict[str, Any]] = {}
@@ -48,24 +56,50 @@ MEDIA_TYPES = {
 
 
 async def _cleanup_expired_files() -> None:
-    """Janitor: purga trabajos terminados y sus archivos cuando superan el TTL."""
+    """Janitor: purga trabajos terminados pasados el TTL y corta los atascados."""
     while True:
         await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
-        cutoff = time.time() - FILE_TTL_MINUTES * 60
+        now = time.time()
+        ttl_cutoff = now - FILE_TTL_MINUTES * 60
+        stale_cutoff = now - MAX_JOB_MINUTES * 60
         expired: list[str] = []
+        stale: list[str] = []
         with JOBS_LOCK:
             for job_id, job in JOBS.items():
-                if job["created_at"] < cutoff and job["status"] in ("completed", "error"):
-                    expired.append(job_id)
-        for job_id in expired:
+                if job["status"] in ("completed", "error"):
+                    if job["created_at"] < ttl_cutoff:
+                        expired.append(job_id)
+                elif job["created_at"] < stale_cutoff:
+                    job.update({
+                        "status": "error",
+                        "progress": 0.0,
+                        "stage": "error",
+                        "error": f"El trabajo excedio el tiempo maximo de {MAX_JOB_MINUTES} minutos",
+                    })
+                    stale.append(job_id)
+        for job_id in expired + stale:
             shutil.rmtree(TEMP_STORAGE / job_id, ignore_errors=True)
+        if expired:
             with JOBS_LOCK:
-                JOBS.pop(job_id, None)
+                for job_id in expired:
+                    JOBS.pop(job_id, None)
+
+
+def _sweep_orphan_dirs() -> None:
+    """Los jobs viven en memoria y mueren con el contenedor: su directorio tambien."""
+    try:
+        entries = list(TEMP_STORAGE.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if entry.is_dir():
+            shutil.rmtree(entry, ignore_errors=True)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     TEMP_STORAGE.mkdir(parents=True, exist_ok=True)
+    _sweep_orphan_dirs()
     janitor = asyncio.create_task(_cleanup_expired_files())
     yield
     janitor.cancel()
@@ -89,6 +123,13 @@ class ProcessRequest(BaseModel):
     def validate_url(cls, value: str) -> str:
         if not value.lower().startswith(("http://", "https://")):
             raise ValueError("La URL debe comenzar con http:// o https://")
+        return value
+
+    @field_validator("format_id")
+    @classmethod
+    def validate_format_id(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and not FORMAT_ID_PATTERN.fullmatch(value):
+            raise ValueError("format_id contiene caracteres no permitidos")
         return value
 
 
@@ -115,6 +156,9 @@ def process_media(request: ProcessRequest, background_tasks: BackgroundTasks) ->
 
     job_id = uuid.uuid4().hex
     with JOBS_LOCK:
+        active = sum(1 for job in JOBS.values() if job["status"] in ACTIVE_STATES)
+        if active >= MAX_CONCURRENT_JOBS:
+            raise HTTPException(status_code=429, detail="Servidor ocupado; reintenta en unos momentos")
         JOBS[job_id] = {
             "job_id": job_id,
             "status": "queued",
@@ -215,12 +259,13 @@ def _run_job(job_id: str, url: str, format_id: Optional[str], audio_only: bool) 
             "noplaylist": True,
             "socket_timeout": 30,
             "retries": 3,
-            "nocheckcertificate": True,
+            "nocheckcertificate": ALLOW_INSECURE_TLS,
             "http_headers": {"User-Agent": USER_AGENT},
             "extractor_retries": 3,
             "fragment_retries": 10,
             "skip_unavailable_fragments": True,
             "windowsfilenames": True,
+            "max_filesize": MAX_FILESIZE_MB * 1024 * 1024,
             "progress_hooks": [_progress_hook(job_id)],
         }
 
@@ -248,13 +293,15 @@ def _run_job(job_id: str, url: str, format_id: Optional[str], audio_only: bool) 
         output_file = _largest_output_file(job_dir)
         logger.info("Job %s completado: %s (%d bytes)", job_id, output_file.name, output_file.stat().st_size)
         with JOBS_LOCK:
-            JOBS[job_id].update({
-                "status": "completed",
-                "progress": 100.0,
-                "stage": "completado",
-                "title": title,
-                "filename": output_file.name,
-            })
+            job = JOBS.get(job_id)
+            if job is not None:
+                job.update({
+                    "status": "completed",
+                    "progress": 100.0,
+                    "stage": "completado",
+                    "title": title,
+                    "filename": output_file.name,
+                })
     except Exception as exc:
         with JOBS_LOCK:
             if job_id in JOBS:
