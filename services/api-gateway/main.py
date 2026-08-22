@@ -215,14 +215,66 @@ def _pick_thumbnail(info: dict[str, Any]) -> Optional[str]:
     return None
 
 
+MP3_BITRATE_KBPS = 192
+
+
+def _format_bytes(fmt: dict[str, Any], duration: Optional[float]) -> Optional[int]:
+    """Tamano exacto si existe; si no, lo aproxima con el bitrate (tbr)."""
+    size = fmt.get("filesize") or fmt.get("filesize_approx")
+    if size:
+        return int(size)
+    tbr = fmt.get("tbr")
+    if tbr and duration and duration > 0:
+        return int(float(tbr) * 1000 / 8 * float(duration))
+    return None
+
+
+def _best_audio_track(info: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Pista de audio que el merge de yt-dlp combinara (m4a preferente)."""
+    tracks = [
+        f
+        for f in info.get("formats") or []
+        if f.get("vcodec") in (None, "none") and f.get("acodec") not in (None, "none")
+    ]
+    if not tracks:
+        return None
+    tracks.sort(key=lambda f: (f.get("ext") == "m4a", f.get("tbr") or 0.0), reverse=True)
+    return tracks[0]
+
+
+def _human_size(size_bytes: Optional[int]) -> Optional[str]:
+    """Convierte bytes a etiqueta legible ('45.2 MB'); None si no hay dato."""
+    if not size_bytes or size_bytes <= 0:
+        return None
+    value = float(size_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            decimals = 0 if unit == "B" else 1
+            return f"{value:.{decimals}f} {unit}".replace(".0 ", " ")
+        value /= 1024
+    return None
+
+
 def _map_formats(info: dict[str, Any]) -> list[dict[str, Any]]:
     """Consolida los formatos crudos de yt-dlp: la mejor pista por resolucion + opcion MP3."""
+    duration = info.get("duration")
+    audio_track = _best_audio_track(info)
+    audio_bytes = _format_bytes(audio_track, duration) if audio_track else None
+
     best_by_height: dict[int, dict[str, Any]] = {}
     for fmt in info.get("formats") or []:
         height = fmt.get("height")
         format_id = fmt.get("format_id")
         if not height or not format_id or fmt.get("vcodec") in (None, "none"):
             continue
+        video_bytes = _format_bytes(fmt, duration)
+        has_own_audio = fmt.get("acodec") not in (None, "none")
+        if video_bytes is None:
+            total_bytes: Optional[int] = None
+        elif has_own_audio or not audio_bytes:
+            total_bytes = video_bytes
+        else:
+            total_bytes = video_bytes + audio_bytes
         candidate = {
             "tbr": fmt.get("tbr") or 0.0,
             "is_mp4": fmt.get("ext") == "mp4",
@@ -232,17 +284,23 @@ def _map_formats(info: dict[str, Any]) -> list[dict[str, Any]]:
                 "height": int(height),
                 "ext": fmt.get("ext"),
                 "filesize_approx": fmt.get("filesize_approx") or fmt.get("filesize"),
+                "filesize_bytes": total_bytes,
+                "filesize_human": _human_size(total_bytes),
             },
         }
         current = best_by_height.get(height)
-        if current is None or (candidate["tbr"], candidate["is_mp4"]) > (current["tbr"], current["is_mp4"]):
+        if current is None or (candidate["tbr"], candidate["is_mp4"]) > (current["tbr"], candidate["is_mp4"]):
             best_by_height[height] = candidate
 
     formats = [entry["payload"] for _, entry in sorted(best_by_height.items(), key=lambda kv: kv[0])][::-1]
+
+    mp3_bytes = int(MP3_BITRATE_KBPS * 1000 / 8 * duration) if duration and duration > 0 else None
     formats.append({
         "format_id": AUDIO_FORMAT_ID,
         "label": "Solo Audio (MP3)",
         "audio_only": True,
+        "filesize_bytes": mp3_bytes,
+        "filesize_human": _human_size(mp3_bytes),
     })
     return formats
 

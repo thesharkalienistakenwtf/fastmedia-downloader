@@ -10,6 +10,8 @@ export interface VideoFormat {
   height?: number;
   ext?: string | null;
   filesize_approx?: number | null;
+  filesize_bytes?: number | null;
+  filesize_human?: string | null;
   audio_only?: boolean;
 }
 

@@ -23,7 +23,11 @@ export default function FormatSelector({ formats, selected, onSelect }: FormatSe
           const isSelected =
             selected?.format_id === format.format_id &&
             Boolean(selected?.audio_only) === isAudio;
-          const size = formatFileSize(format.filesize_approx);
+          const estimatedBytes = format.filesize_bytes ?? format.filesize_approx ?? null;
+          const humanSize =
+            format.filesize_human ??
+            (estimatedBytes ? formatFileSize(estimatedBytes) : null);
+          const sizeLabel = humanSize ? `~ ${humanSize}` : "N/A";
 
           return (
             <button
@@ -43,11 +47,9 @@ export default function FormatSelector({ formats, selected, onSelect }: FormatSe
                 <MonitorPlay className={`h-5 w-5 shrink-0 ${isSelected ? "text-violet-300" : "text-slate-400"}`} aria-hidden />
               )}
               <span className="min-w-0 flex-1 truncate font-medium text-white">{format.label}</span>
-              {(size || format.ext) && (
-                <span className="shrink-0 font-mono text-[11px] text-slate-500">
-                  {[format.ext?.toUpperCase(), size && `≈ ${size}`].filter(Boolean).join(" · ")}
-                </span>
-              )}
+              <span className="shrink-0 font-mono text-[11px] text-slate-500">
+                {[format.ext?.toUpperCase(), sizeLabel].filter(Boolean).join(" · ")}
+              </span>
             </button>
           );
         })}
