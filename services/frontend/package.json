@@ -2,6 +2,8 @@
   "name": "fastmedia-frontend",
   "version": "1.0.0",
   "private": true,
+  "author": "Juan Camilo Llamas Cárdenas",
+  "license": "MIT",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

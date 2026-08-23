@@ -5,6 +5,29 @@ pistas audio/video) y conversion de formatos mediante FFmpeg. Gestiona
 el ciclo de vida de archivos temporales (UUIDs) y su limpieza post-descarga.
 """
 
+#  _________________________________________________________________
+# /                                                                 \
+# |   FastMedia Downloader - High-Performance Engine                |
+# |   Architecture & Core Implementation                            |
+# |                                                                 |
+# |   Author: Juan Camilo Llamas Cárdenas                           |
+# |   License: MIT (Free & Open Source Use)                         |
+# |   Copyright (c) 2026 Juan Camilo Llamas Cárdenas                |
+# \_________________________________________________________________/
+#               \
+#                \   /\___/\
+#                   /       \
+#                  |  #   #  |
+#                  \  ___  /
+#                   |     |
+#                   |     |      __
+#                   |     \_____/  \
+#                   |               |
+#                    \______/\_____/
+#                    /      /
+#                   /      /
+#                  /__/   /__/
+
 import asyncio
 import logging
 import os
@@ -109,6 +132,8 @@ app = FastAPI(
     title="FastMedia Downloader - Media Processor",
     description="Descarga y procesamiento de medios con yt-dlp + FFmpeg.",
     version="1.0.0",
+    contact={"name": "Juan Camilo Llamas Cárdenas"},
+    license_info={"name": "MIT", "url": "https://opensource.org/licenses/MIT"},
     lifespan=lifespan,
 )
 

@@ -1,3 +1,26 @@
+//  _________________________________________________________________
+// /                                                                 \
+// |   FastMedia Downloader - High-Performance Engine                |
+// |   Architecture & Core Implementation                            |
+// |                                                                 |
+// |   Author: Juan Camilo Llamas Cárdenas                           |
+// |   License: MIT (Free & Open Source Use)                         |
+// |   Copyright (c) 2026 Juan Camilo Llamas Cárdenas                |
+// \_________________________________________________________________/
+//               \
+//                \   /\___/\
+//                   /       \
+//                  |  #   #  |
+//                  \  ___  /
+//                   |     |
+//                   |     |      __
+//                   |     \_____/  \
+//                   |               |
+//                    \______/\_____/
+//                    /      /
+//                   /      /
+//                  /__/   /__/
+
 // Cliente tipado del API Gateway de FastMedia Downloader.
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";

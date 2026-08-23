@@ -1,5 +1,12 @@
 FROM python:3.11-slim
 
+LABEL org.opencontainers.image.title="FastMedia Downloader — API Gateway" \
+      org.opencontainers.image.description="Extracción de metadatos y orquestación de descargas multimedia" \
+      org.opencontainers.image.authors="Juan Camilo Llamas Cárdenas" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.copyright="Copyright (c) 2026 Juan Camilo Llamas Cárdenas" \
+      org.opencontainers.image.version="1.0.0"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1

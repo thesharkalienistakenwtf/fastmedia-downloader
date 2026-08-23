@@ -5,6 +5,29 @@ Enrutamiento, validaciones y CORS. Extrae metadatos ligeros con yt-dlp
 media-processor, actuando como proxy de estado y streaming de archivos.
 """
 
+#  _________________________________________________________________
+# /                                                                 \
+# |   FastMedia Downloader - High-Performance Engine                |
+# |   Architecture & Core Implementation                            |
+# |                                                                 |
+# |   Author: Juan Camilo Llamas Cárdenas                           |
+# |   License: MIT (Free & Open Source Use)                         |
+# |   Copyright (c) 2026 Juan Camilo Llamas Cárdenas                |
+# \_________________________________________________________________/
+#               \
+#                \   /\___/\
+#                   /       \
+#                  |  #   #  |
+#                  \  ___  /
+#                   |     |
+#                   |     |      __
+#                   |     \_____/  \
+#                   |               |
+#                    \______/\_____/
+#                    /      /
+#                   /      /
+#                  /__/   /__/
+
 import ipaddress
 import logging
 import os
@@ -117,6 +140,8 @@ app = FastAPI(
     title="FastMedia Downloader - API Gateway",
     description="Extraccion de metadatos y orquestacion de descargas multimedia.",
     version="1.0.0",
+    contact={"name": "Juan Camilo Llamas Cárdenas"},
+    license_info={"name": "MIT", "url": "https://opensource.org/licenses/MIT"},
 )
 
 app.add_middleware(

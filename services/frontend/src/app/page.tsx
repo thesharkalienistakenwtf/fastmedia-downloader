@@ -1,5 +1,28 @@
 "use client";
 
+//  _________________________________________________________________
+// /                                                                 \
+// |   FastMedia Downloader - High-Performance Engine                |
+// |   Architecture & Core Implementation                            |
+// |                                                                 |
+// |   Author: Juan Camilo Llamas Cárdenas                           |
+// |   License: MIT (Free & Open Source Use)                         |
+// |   Copyright (c) 2026 Juan Camilo Llamas Cárdenas                |
+// \_________________________________________________________________/
+//               \
+//                \   /\___/\
+//                   /       \
+//                  |  #   #  |
+//                  \  ___  /
+//                   |     |
+//                   |     |      __
+//                   |     \_____/  \
+//                   |               |
+//                    \______/\_____/
+//                    /      /
+//                   /      /
+//                  /__/   /__/
+
 import { useCallback, useEffect, useState } from "react";
 import {
   AlertTriangle,
