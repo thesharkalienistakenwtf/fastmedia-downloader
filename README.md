@@ -1,5 +1,10 @@
 # FastMedia Downloader
 
+[![CI Pipeline](https://github.com/Llamas126/fastmedia-downloader/actions/workflows/ci.yml/badge.svg)](https://github.com/Llamas126/fastmedia-downloader/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4ba51d.svg)](CODE_OF_CONDUCT.md)
+[![Security Policy](https://img.shields.io/badge/Security-Policy-blue.svg)](SECURITY.md)
+
 **Microservices-Based Video & Media Extractor** — Plataforma web escalable y distribuida para analizar y descargar videos/audio en cualquier calidad (hasta **4K** con combinación de pistas vía **FFmpeg**, o **MP3** solo audio).
 
 > ⚠️ **Aviso legal**: utiliza esta herramienta únicamente con contenido del que tengas derechos o autorización explícita. Respeta los Términos de Servicio de las plataformas origen y las leyes de copyright de tu jurisdicción.
@@ -182,26 +187,25 @@ fastmedia-downloader/
 
 ---
 
-## 🤝 ¿Cómo contribuir al proyecto?
+## 🤝 Comunidad y Contribución
 
-¡Las contribuciones son bienvenidas y apreciadas! Si deseas mejorar el código, solucionar un bug o agregar nuevas funcionalidades, sigue estos pasos:
+¡Las contribuciones son bienvenidas! Antes de empezar, consulta las guías oficiales del proyecto:
+
+| Guía | Propósito |
+|---|---|
+| 📘 [Guía de Contribución](CONTRIBUTING.md) | Flujo de trabajo Git, validación local y convención de commits |
+| 🛡️ [Código de Conducta](CODE_OF_CONDUCT.md) | Contributor Covenant v2.1 que rige nuestra comunidad |
+| 🔐 [Política de Seguridad](SECURITY.md) | Reporte privado de vulnerabilidades vía Security Advisories |
+
+### Flujo rápido / Quick workflow
 
 1. **Haz un Fork** del repositorio.
-2. **Crea una rama** para tu funcionalidad o fix:
-   ```bash
-   git checkout -b feature/nueva-funcionalidad
-   # o para correcciones:
-   git checkout -b fix/descripcion-del-bug
-   ```
-3. **Realiza tus cambios** y haz commits claros utilizando [Conventional Commits](https://www.conventionalcommits.org/):
-   ```bash
-   git commit -m "feat: agregar soporte para nueva plataforma"
-   ```
-4. **Envía tus cambios** a tu repositorio remoto:
-   ```bash
-   git push origin feature/nueva-funcionalidad
-   ```
-5. **Abre un Pull Request (PR)** hacia la rama `main` de este repositorio detallando los cambios realizados.
+2. **Crea una rama** desde `main`: `feature/<nombre>` o `fix/<descripción>`.
+3. **Realiza tus cambios** con commits siguiendo [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, …).
+4. **Valida localmente**: `docker compose build` · `npx tsc --noEmit` (frontend) · `flake8` con `--select=E9,F63,F7,F82` (backends).
+5. **Abre un Pull Request** hacia `main` completando la plantilla de PR.
+
+> 🐛 Errores y ✨ funciones se reportan mediante las [plantillas de Issues](.github/ISSUE_TEMPLATE/) · Las dudas generales van a [Discussions](https://github.com/Llamas126/fastmedia-downloader/discussions).
 
 ---
 
